@@ -58,6 +58,8 @@
     [[FBRoute POST:@"/wda/siri/activate"] respondWithTarget:self action:@selector(handleActivateSiri:)],
     [[FBRoute POST:@"/wda/apps/launchUnattached"].withoutSession respondWithTarget:self action:@selector(handleLaunchUnattachedApp:)],
     [[FBRoute GET:@"/wda/device/info"] respondWithTarget:self action:@selector(handleGetDeviceInfo:)],
+    [[FBRoute GET:@"/wda/device/info"].withoutSession respondWithTarget:self action:@selector(handleGetDeviceInfo:)],
+    [[FBRoute OPTIONS:@"/*"].withoutSession respondWithTarget:self action:@selector(handlePingCommand:)],
   ];
 }
 
@@ -119,10 +121,15 @@
   return FBResponseWithOK();
 }
 
++ (id<FBResponsePayload>)handlePingCommand:(FBRouteRequest *)request
+{
+  return FBResponseWithOK();
+}
+
 #pragma mark - Helpers
 
 + (BOOL)isKeyboardPresentForApplication:(XCUIApplication *)application {
-  XCUIElement *foundKeyboard = [application.query descendantsMatchingType:XCUIElementTypeKeyboard].fb_firstMatch;
+  XCUIElement *foundKeyboard = [application.fb_query descendantsMatchingType:XCUIElementTypeKeyboard].fb_firstMatch;
   return foundKeyboard && foundKeyboard.fb_isVisible;
 }
 
@@ -165,7 +172,7 @@
 
 + (id<FBResponsePayload>)handleActiveAppInfo:(FBRouteRequest *)request
 {
-  XCUIApplication *app = FBApplication.fb_activeApplication;
+  XCUIApplication *app = request.session.activeApplication ?: FBApplication.fb_activeApplication;
   return FBResponseWithObject(@{
     @"pid": @(app.processID),
     @"bundleId": app.bundleID,
@@ -286,7 +293,48 @@
   return FBResponseWithObject(@{
     @"currentLocale": currentLocale,
     @"timeZone": self.timeZone,
+    @"name": UIDevice.currentDevice.name,
+    @"model": UIDevice.currentDevice.model,
+    @"uuid": [UIDevice.currentDevice.identifierForVendor UUIDString] ?: @"unknown",
+    // https://developer.apple.com/documentation/uikit/uiuserinterfaceidiom?language=objc
+    @"userInterfaceIdiom": @(UIDevice.currentDevice.userInterfaceIdiom),
+    @"userInterfaceStyle": self.userInterfaceStyle,
+#if TARGET_OS_SIMULATOR
+    @"isSimulator": @(YES),
+#else
+    @"isSimulator": @(NO),
+#endif
   });
+}
+
+/**
+ * @return Current user interface style as a string
+ */
++ (NSString *)userInterfaceStyle
+{
+  static id userInterfaceStyle = nil;
+  static dispatch_once_t styleOnceToken;
+  dispatch_once(&styleOnceToken, ^{
+    if ([UITraitCollection respondsToSelector:NSSelectorFromString(@"currentTraitCollection")]) {
+      id currentTraitCollection = [UITraitCollection performSelector:NSSelectorFromString(@"currentTraitCollection")];
+      if (nil != currentTraitCollection) {
+        userInterfaceStyle = [currentTraitCollection valueForKey:@"userInterfaceStyle"];
+      }
+    }
+  });
+
+  if (nil == userInterfaceStyle) {
+    return @"unsupported";
+  }
+
+  switch ([userInterfaceStyle integerValue]) {
+    case 1: // UIUserInterfaceStyleLight
+      return @"light";
+    case 2: // UIUserInterfaceStyleDark
+      return @"dark";
+    default:
+      return @"unknown";
+  }
 }
 
 /**

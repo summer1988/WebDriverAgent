@@ -57,6 +57,7 @@
     [[FBRoute GET:@"/element/:uuid/attribute/:name"] respondWithTarget:self action:@selector(handleGetAttribute:)],
     [[FBRoute GET:@"/element/:uuid/text"] respondWithTarget:self action:@selector(handleGetText:)],
     [[FBRoute GET:@"/element/:uuid/displayed"] respondWithTarget:self action:@selector(handleGetDisplayed:)],
+    [[FBRoute GET:@"/element/:uuid/selected"] respondWithTarget:self action:@selector(handleGetSelected:)],
     [[FBRoute GET:@"/element/:uuid/name"] respondWithTarget:self action:@selector(handleGetName:)],
     [[FBRoute POST:@"/element/:uuid/value"] respondWithTarget:self action:@selector(handleSetValue:)],
     [[FBRoute POST:@"/element/:uuid/click"] respondWithTarget:self action:@selector(handleClick:)],
@@ -73,8 +74,10 @@
 #else
     [[FBRoute POST:@"/wda/element/:uuid/swipe"] respondWithTarget:self action:@selector(handleSwipe:)],
     [[FBRoute POST:@"/wda/element/:uuid/pinch"] respondWithTarget:self action:@selector(handlePinch:)],
+    [[FBRoute POST:@"/wda/element/:uuid/rotate"] respondWithTarget:self action:@selector(handleRotate:)],
     [[FBRoute POST:@"/wda/element/:uuid/doubleTap"] respondWithTarget:self action:@selector(handleDoubleTap:)],
     [[FBRoute POST:@"/wda/element/:uuid/twoFingerTap"] respondWithTarget:self action:@selector(handleTwoFingerTap:)],
+    [[FBRoute POST:@"/wda/element/:uuid/tapWithNumberOfTaps"] respondWithTarget:self action:@selector(handleTapWithNumberOfTaps:)],
     [[FBRoute POST:@"/wda/element/:uuid/touchAndHold"] respondWithTarget:self action:@selector(handleTouchAndHold:)],
     [[FBRoute POST:@"/wda/element/:uuid/scroll"] respondWithTarget:self action:@selector(handleScroll:)],
     [[FBRoute POST:@"/wda/element/:uuid/dragfromtoforduration"] respondWithTarget:self action:@selector(handleDrag:)],
@@ -187,6 +190,17 @@
   return FBResponseWithObject(type);
 }
 
++ (id<FBResponsePayload>)handleGetSelected:(FBRouteRequest *)request
+{
+  FBElementCache *elementCache = request.session.elementCache;
+  XCUIElement *element = [elementCache elementForUUID:request.parameters[@"uuid"]];
+  if (nil == element) {
+    return FBResponseWithStatus([FBCommandStatus staleElementReferenceErrorWithMessage:nil
+                                                                             traceback:nil]);
+  }
+  return FBResponseWithObject(@(element.wdSelected));
+}
+
 + (id<FBResponsePayload>)handleSetValue:(FBRouteRequest *)request
 {
   FBElementCache *elementCache = request.session.elementCache;
@@ -220,7 +234,7 @@
   NSUInteger frequency = (NSUInteger)[request.arguments[@"frequency"] longLongValue] ?: [FBConfiguration maxTypingFrequency];
   NSError *error = nil;
   if (![element fb_typeText:textToType frequency:frequency error:&error]) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:error.description traceback:nil]);
   }
   return FBResponseWithOK();
 }
@@ -272,7 +286,7 @@
   if (focusedElement != nil) {
     FBElementCache *elementCache = request.session.elementCache;
     NSString *focusedUUID = [elementCache storeElement:focusedElement];
-    if ([focusedUUID isEqualToString:request.parameters[@"uuid"]]) {
+    if (focusedUUID && [focusedUUID isEqualToString:(id)request.parameters[@"uuid"]]) {
       isFocused = YES;
     }
   }
@@ -329,6 +343,23 @@
   return FBResponseWithOK();
 }
 
++ (id<FBResponsePayload>)handleTapWithNumberOfTaps:(FBRouteRequest *)request
+{
+  FBElementCache *elementCache = request.session.elementCache;
+  if (nil == request.arguments[@"numberOfTaps"] || nil == request.arguments[@"numberOfTouches"]) {
+    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Both 'numberOfTaps' and 'numberOfTouches' arguments must be provided"
+                                                                       traceback:nil]);
+  }
+  XCUIElement *element = [elementCache elementForUUID:request.parameters[@"uuid"]];
+  if (nil == element) {
+    return FBResponseWithStatus([FBCommandStatus staleElementReferenceErrorWithMessage:nil
+                                                                             traceback:nil]);
+  }
+  [element tapWithNumberOfTaps:[request.arguments[@"numberOfTaps"] integerValue]
+               numberOfTouches:[request.arguments[@"numberOfTouches"] integerValue]];
+  return FBResponseWithOK();
+}
+
 + (id<FBResponsePayload>)handleTouchAndHold:(FBRouteRequest *)request
 {
   FBElementCache *elementCache = request.session.elementCache;
@@ -362,7 +393,7 @@
   // what ios-driver did and sadly, we must copy them.
   NSString *const name = request.arguments[@"name"];
   if (name) {
-    XCUIElement *childElement = [[[[element descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:name] allElementsBoundByAccessibilityElement] lastObject];
+    XCUIElement *childElement = [[[[element.fb_query descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:name] allElementsBoundByAccessibilityElement] lastObject];
     if (!childElement) {
       return FBResponseWithStatus([FBCommandStatus noSuchElementErrorWithMessage:[NSString stringWithFormat:@"'%@' identifier didn't match any elements", name] traceback:[NSString stringWithFormat:@"%@", NSThread.callStackSymbols]]);
     }
@@ -388,7 +419,7 @@
   NSString *const predicateString = request.arguments[@"predicateString"];
   if (predicateString) {
     NSPredicate *formattedPredicate = [NSPredicate fb_formatSearchPredicate:[FBPredicate predicateWithFormat:predicateString]];
-    XCUIElement *childElement = [[[[element descendantsMatchingType:XCUIElementTypeAny] matchingPredicate:formattedPredicate] allElementsBoundByAccessibilityElement] lastObject];
+    XCUIElement *childElement = [[[[element.fb_query descendantsMatchingType:XCUIElementTypeAny] matchingPredicate:formattedPredicate] allElementsBoundByAccessibilityElement] lastObject];
     if (!childElement) {
       return FBResponseWithStatus([FBCommandStatus noSuchElementErrorWithMessage:[NSString stringWithFormat:@"'%@' predicate didn't match any elements", predicateString] traceback:[NSString stringWithFormat:@"%@", NSThread.callStackSymbols]]);
     }
@@ -488,6 +519,20 @@
   [element pinchWithScale:scale velocity:velocity];
   return FBResponseWithOK();
 }
+
++ (id<FBResponsePayload>)handleRotate:(FBRouteRequest *)request
+{
+  FBElementCache *elementCache = request.session.elementCache;
+  XCUIElement *element = [elementCache elementForUUID:request.parameters[@"uuid"]];
+  if (nil == element) {
+    return FBResponseWithStatus([FBCommandStatus staleElementReferenceErrorWithMessage:nil
+                                                                             traceback:nil]);
+  }
+  CGFloat rotation = (CGFloat)[request.arguments[@"rotation"] doubleValue];
+  CGFloat velocity = (CGFloat)[request.arguments[@"velocity"] doubleValue];
+  [element rotate:rotation withVelocity:velocity];
+  return FBResponseWithOK();
+}
 #endif
 
 + (id<FBResponsePayload>)handleForceTouch:(FBRouteRequest *)request
@@ -519,7 +564,8 @@
   NSString *textToType = [request.arguments[@"value"] componentsJoinedByString:@""];
   NSUInteger frequency = [request.arguments[@"frequency"] unsignedIntegerValue] ?: [FBConfiguration maxTypingFrequency];
   NSError *error;
-  if (![FBKeyboard typeText:textToType frequency:frequency error:&error]) {
+  if (![FBKeyboard waitUntilVisibleForApplication:request.session.activeApplication timeout:1 error:&error]
+      || ![FBKeyboard typeText:textToType frequency:frequency error:&error]) {
     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:error.description traceback:nil]);
   }
   return FBResponseWithOK();
